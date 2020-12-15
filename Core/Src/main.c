@@ -1,4 +1,11 @@
 /* USER CODE BEGIN Header */
+
+/* F103C8_Timer
+ * Manipulação do Timer 2 do microcontrolador STM32F103C8 para
+ * explorar as funcionalidades desse periférico, como interrupção
+ * por overflow, captura/comparação com forma de onda em canal de
+ * saída.  */
+
 /**
   ******************************************************************************
   * @file           : main.c
@@ -32,6 +39,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define CONVERT_AD_TIMER	16	//Fator de conversão 12 bits para 16 bits
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -40,16 +48,19 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
-
+uint32_t read_adc=0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -82,20 +93,29 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  /* Clock do sistema: 72 MHz. Testes com 8 MHz mostraram que o timer não operou adequadamente. */
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM2_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   htim2.Instance->CR1 |= 0x01; //Habilita o timer 2
-  HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_1); //Inicia a geração da forma de onda
-  //por modo de comparação
+  HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_1); //Inicia a geração da forma de onda por modo de comparação
 
-  //Alterar Auto Reload Register e Capture/Compare Register (canal 1)
-  htim2.Instance->ARR = 0x57FF;
-  htim2.Instance->CCR1 = 0xFF5;
+  /* Foi necessário habilitar o preload dos registradores ARR e CCR1
+   * para uma operação adequada do projeto. Sem o preload, observou-se que
+   * o LED apresentou mau funcionamento devido à instabilidade da forma de onda
+   * no canal de saída do timer. Isso ocorreu devido à operação mal coordenada
+   * entre conversão AD e atualização dos registradores ARR e CCR1. O uso do preload
+   * garantiu a atualização desses registradores somente após o update event (UEV),
+   * eliminando interferência com o AD.   */
+
+
+  //Alterar manualmente Auto Reload Register e Capture/Compare Register (canal 1)
+  /*htim2.Instance->ARR = 0x57FF;
+  htim2.Instance->CCR1 = 0xFF5;*/
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -110,6 +130,21 @@ int main(void)
 	  pois o processador trata a a geração do sinal por
 	  comparação automaticamente. */
 
+	  //Leitura do AD
+	  HAL_ADC_Start(&hadc1); //início da conversão
+	  read_adc = HAL_ADC_GetValue(&hadc1);	//leitura
+
+	  //Atualização do timer
+	  htim2.Instance->ARR = read_adc*CONVERT_AD_TIMER;
+	  //Se read_adc é não-nulo, atribui-se o valor do ARR dividido por 4
+	  //ao registrador de comparação
+	  if(read_adc)
+		  htim2.Instance->CCR1 = htim2.Instance->ARR/4;
+	  else{
+		  htim2.Instance->ARR = read_adc+10;
+		  htim2.Instance->CCR1 = htim2.Instance->ARR/2;
+	  }
+
 
   }
   /* USER CODE END 3 */
@@ -123,6 +158,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -151,6 +187,57 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_7;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+  hadc1.Instance->CR1 |= 0x01; //Inicializa o conversor AD
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -177,7 +264,7 @@ static void MX_TIM2_Init(void)
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 65535;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
   {
     Error_Handler();
@@ -205,6 +292,7 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  __HAL_TIM_ENABLE_OCxPRELOAD(&htim2, TIM_CHANNEL_1);
   /* USER CODE BEGIN TIM2_Init 2 */
   htim2.Instance->DIER |= 0x02;	//Habilita interrupção por captura/comparação do canal 1
   /* USER CODE END TIM2_Init 2 */
